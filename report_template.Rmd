@@ -1,0 +1,311 @@
+---
+title: "ANOVA Report"
+output:
+  html_document:
+    theme: united
+    toc: true
+    toc_float: true
+params:
+  model_formula: NULL
+  dataset: NULL
+  anova_output: NULL
+  tukey_plot: NULL
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+source("helpers.R", local = TRUE)
+library(ggplot2)
+library(lsr)
+library(htmltools)
+library(dplyr)
+library(agricolae)
+library(htmlTable)
+library(car)
+library(nortest)
+library(gghalves)
+```
+
+##  Model Formula
+
+**`r as.character(params$model_formula)`**
+
+## 📄 Dataset Preview
+
+```{r dataset-preview}
+knitr::kable(params$dataset, caption = "Full Dataset")
+```
+
+##  ANOVA Table
+
+```{r anova-table, results='asis'}
+params$anova_output$htmlTable
+```
+
+##  Summary
+
+```{r summary-card, results='asis'}
+depvar <- all.vars(params$model_formula)[1]
+indvar <- all.vars(params$model_formula)[-1]
+HTML(do.call(summary_card, list(model = params$anova_output, df = params$dataset, depvar = depvar, indvar = indvar)))
+```
+
+##  Histogram of Dependent Variable
+
+```{r histogram}
+dep <- all.vars(params$model_formula)[1]
+ggplot(params$dataset, aes_string(x = dep)) +
+  geom_histogram(fill = "lightgreen", color = "black", bins = 30) +
+  theme_minimal() +
+  labs(title = "Histogram of Dependent Variable", x = dep, y = "Count")
+```
+
+##  Boxplot of Dependent Variable
+
+```{r boxplot}
+ind <- paste(all.vars(params$model_formula)[-1], collapse = ":")
+ggplot(params$dataset, aes_string(x = ind, y = all.vars(params$model_formula)[1])) +
+  geom_boxplot(fill = "#a0c4ff") +
+  theme_minimal() +
+  labs(title = "Boxplot of Dependent Variable by Group", x = "Group", y = all.vars(params$model_formula)[1])
+```
+
+##  QQ Plot of Residuals
+
+```{r qq-plot}
+model <- lm(params$model_formula, data = params$dataset)
+qqnorm(model$residuals)
+qqline(model$residuals, col = "red")
+```
+
+##  Residuals vs Fitted
+
+```{r residuals-vs-fitted}
+plot(model$fitted.values, model$residuals,
+     xlab = "Fitted Values", ylab = "Residuals",
+     main = "Residuals vs Fitted")
+abline(h = 0, col = "red", lty = 2)
+```
+
+
+##  Multi-vari Chart
+
+```{r multivari}
+if (length(all.vars(params$model_formula)) == 3) {
+  dep <- all.vars(params$model_formula)[1]
+  ind1 <- all.vars(params$model_formula)[2]
+  ind2 <- all.vars(params$model_formula)[3]
+  df <- params$dataset
+  df[[ind1]] <- factor(df[[ind1]])
+  df[[ind2]] <- factor(df[[ind2]])
+  ggplot(df, aes_string(x = ind1, y = dep, color = ind2, group = ind2)) +
+    stat_summary(fun = mean, geom = "point", size = 3) +
+    stat_summary(fun = mean, geom = "line") +
+    theme_minimal() +
+    labs(title = "Multi-vari Chart", x = ind1, y = dep, color = ind2)
+}
+```
+
+
+##  Violin Plot
+
+```{r violin}
+dep <- all.vars(params$model_formula)[1]
+ind <- paste(all.vars(params$model_formula)[-1], collapse = ":")
+df <- params$dataset
+df$Group <- interaction(df[, all.vars(params$model_formula)[-1]], drop = TRUE)
+ggplot(df, aes(x = Group, y = .data[[dep]], fill = Group)) +
+  geom_violin(alpha = 0.5) +
+  geom_jitter(width = 0.15, alpha = 0.5, color = "gray30") +
+  theme_minimal() +
+  labs(title = "Violin Plot", x = "Group", y = dep)
+```
+
+##  Raincloud Plot
+
+```{r raincloud}
+df <- params$dataset
+df$Group <- interaction(df[, all.vars(params$model_formula)[-1]], drop = TRUE)
+ggplot(df, aes(x = Group, y = .data[[dep]], fill = Group)) +
+  gghalves::geom_half_violin(side = "l", alpha = 0.5) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  gghalves::geom_half_point(side = "r", alpha = 0.4) +
+  theme_minimal() +
+  labs(title = "Raincloud Plot", x = "Group", y = dep)
+```
+##  Effect Sizes (η²)
+
+```{r eta-squared}
+eta_vals <- etaSquared(aov(model), type = 3)
+eta_df <- as.data.frame(eta_vals)
+eta_df$Term <- rownames(eta_df)
+ggplot(eta_df, aes(x = reorder(Term, eta.sq), y = eta.sq)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "Effect Sizes (η²)", x = "Effect", y = "η²")
+```
+
+
+##  Shapiro-Wilk & Lilliefors
+
+```{r shapiro-lillie}
+resids <- residuals(model)
+hist(resids, breaks = 20, main = "Histogram of Residuals (Shapiro-Wilk)",
+     xlab = "Residuals", col = "lightblue", border = "white")
+mtext(sprintf("Shapiro-Wilk p = %.3f", shapiro.test(resids)$p.value), side = 3, line = 0.5)
+
+hist(resids, breaks = 20, probability = TRUE,
+     main = "Lilliefors Test: Residuals vs Normal", col = "lightpink", border = "white",
+     xlab = "Residuals")
+curve(dnorm(x, mean(resids), sd(resids)), col = "darkred", lwd = 2, add = TRUE)
+mtext(sprintf("Lilliefors p = %.3f", nortest::lillie.test(resids)$p.value), side = 3, line = 0.5)
+```
+
+##  Normality Tests by Group
+
+```{r by-group-tests}
+group <- interaction(params$dataset[, all.vars(params$model_formula)[-1]], drop = TRUE)
+dep <- all.vars(params$model_formula)[1]
+df <- data.frame(Group = group, Value = params$dataset[[dep]])
+
+shapiro_vals <- by(df$Value, df$Group, function(x) {
+  if (length(x) >= 3 && length(unique(x)) > 2) {
+    tryCatch(shapiro.test(x)$p.value, error = function(e) NA)
+  } else NA
+})
+df_shapiro <- data.frame(Group = names(shapiro_vals), P_value = as.numeric(shapiro_vals))
+ggplot(df_shapiro, aes(x = Group, y = P_value)) +
+  geom_bar(stat = "identity", fill = "#5dade2") +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Shapiro-Wilk Test by Group", y = "p-value", x = "Group")
+
+lillie_vals <- by(df$Value, df$Group, function(x) {
+  if (length(x) >= 4 && length(unique(x)) > 2) {
+    tryCatch(nortest::lillie.test(x)$p.value, error = function(e) NA)
+  } else NA
+})
+df_lillie <- data.frame(Group = names(lillie_vals), P_value = as.numeric(lillie_vals))
+ggplot(df_lillie, aes(x = Group, y = P_value)) +
+  geom_bar(stat = "identity", fill = "#48c9b0") +
+  geom_hline(yintercept = 0.05, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Lilliefors Test by Group", y = "p-value", x = "Group")
+```
+## 🔹 Tukey HSD Plot
+  
+```{r tukey-hsd-plot, echo=FALSE, fig.align='center', fig.cap='Tukey HSD Confidence Intervals'}
+# Extract variable names
+vars <- all.vars(params$model_formula)
+depvar <- vars[1]
+indvar <- vars[2]
+
+# Work on a local copy to avoid modifying params
+local_df <- params$dataset
+local_df[[indvar]] <- factor(trimws(as.character(local_df[[indvar]])))
+
+# Fit the model
+aov_model <- aov(params$model_formula, data = local_df)
+
+# Run and plot Tukey HSD
+tukey_result <- TukeyHSD(aov_model)
+plot(tukey_result, las = 1, col = "steelblue")
+
+```
+
+------------------------------------------------------------------------
+##  Group Means with 95% CI & Tukey Grouping
+  
+```{r group-means-ci, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(agricolae)
+
+# Extract variables
+vars <- all.vars(params$model_formula)
+dep <- vars[1]
+ind <- vars[2]
+df <- params$dataset
+df[[ind]] <- factor(trimws(tolower(as.character(df[[ind]]))))
+
+# Prepare summary statistics
+summary_df <- df %>%
+  group_by(.data[[ind]]) %>%
+  summarise(
+    Mean = mean(.data[[dep]], na.rm = TRUE),
+    N = n(),
+    SD = sd(.data[[dep]], na.rm = TRUE),
+    SEM = SD / sqrt(N),
+    .groups = 'drop'
+  ) %>%
+  mutate(
+    CI_lower = Mean - 1.96 * SEM,
+    CI_upper = Mean + 1.96 * SEM
+  )
+
+# Tukey grouping
+aov_model <- aov(params$model_formula, data = df)
+tukey_result <- agricolae::HSD.test(aov_model, trt = ind, group = TRUE)
+groups <- as.data.frame(tukey_result$groups)
+groups[[ind]] <- rownames(groups)
+summary_df <- merge(summary_df, groups[, c(ind, "groups")], by = ind)
+
+# Plot
+ggplot(summary_df, aes_string(x = ind, y = "Mean")) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.2) +
+  geom_text(aes(label = groups, y = CI_upper + 0.1 * max(CI_upper)), vjust = 0) +
+  theme_minimal() +
+  labs(title = "Group Means ± 95% CI with Tukey Grouping", x = ind, y = dep)
+```
+
+------------------------------------------------------------------------
+  
+## Homogeneity Tests (Levene & Bartlett)
+  
+```{r lev-bart-table, results='asis'}
+my_check_homogeneity_of_column(params$dataset, all.vars(params$model_formula)[1], all.vars(params$model_formula)[2])
+```
+
+------------------------------------------------------------------------
+  
+##  Standard Deviation per Group
+  
+```{r sd-plot}
+library(dplyr)
+library(ggplot2)
+df <- params$dataset
+dep <- all.vars(params$model_formula)[1]
+ind <- all.vars(params$model_formula)[2]
+
+sd_df <- df %>%
+  group_by(.data[[ind]]) %>%
+  summarise(SD = sd(.data[[dep]], na.rm = TRUE)) %>%
+  ungroup()
+
+ggplot(sd_df, aes_string(x = ind, y = "SD")) +
+  geom_bar(stat = "identity", fill = "darkorange") +
+  theme_minimal() +
+  labs(title = "Standard Deviation per Group", x = ind, y = "Standard Deviation")
+```
+
+------------------------------------------------------------------------
+  
+##  Residual Spread by Group
+  
+```{r residual-spread-plot}
+model <- lm(params$model_formula, data = params$dataset)
+plot_data <- data.frame(
+  Group = params$dataset[[all.vars(params$model_formula)[2]]],
+  AbsResidual = abs(residuals(model))
+)
+
+ggplot(plot_data, aes(x = Group, y = AbsResidual)) +
+  geom_boxplot(fill = "#fbc531") +
+  theme_minimal() +
+  labs(
+    title = "Spread of Absolute Residuals by Group (Levene Visual)",
+    x = "Group", y = "Absolute Residual"
+  )
+```
